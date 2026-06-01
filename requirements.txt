@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+streamlit
+requests
+pandas
+numpy
+opencv-python-headless
+sqlalchemy
+pydantic
+python-multipart
+plotly
+pytest
+loguru
