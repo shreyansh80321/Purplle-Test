@@ -130,15 +130,6 @@ class AutoCameraCalibrator:
                 "Center-dominant movement; treating as inside-store camera."
             )
 
-        # Important conservative rule:
-        # If motion is mostly near edges and not enough motion enters the center/interior,
-        # treat it as outside/walkway footage. This prevents corridor passersby from
-        # becoming false store entries.
-        if edge_ratio >= 0.55 and center_ratio <= 0.45:
-            return self._outside_passby_config(
-                "Edge-heavy movement with insufficient interior confirmation."
-            )
-
         if center_hits < 30:
             return self._outside_passby_config(
                 "Not enough interior motion to confirm store entry."
