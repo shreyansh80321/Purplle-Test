@@ -7,6 +7,7 @@ from app.db.models import StoreEvent
 from app.analytics.metrics import get_store_metrics
 from app.analytics.funnel import get_store_funnel
 from app.analytics.anomalies import get_store_anomalies
+from app.api.video import router as video_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -15,6 +16,8 @@ app = FastAPI(
     version="0.2.0",
     description="CPU-first Store Intelligence API using CCTV-derived structured events."
 )
+
+app.include_router(video_router)
 
 
 @app.get("/")
@@ -70,3 +73,14 @@ def events(db: Session = Depends(get_db)):
 @app.get("/anomalies")
 def anomalies(db: Session = Depends(get_db)):
     return get_store_anomalies(db)
+
+
+@app.delete("/events/reset")
+def reset_events(db: Session = Depends(get_db)):
+    deleted = db.query(StoreEvent).delete()
+    db.commit()
+
+    return {
+        "status": "success",
+        "deleted_events": deleted
+    }
