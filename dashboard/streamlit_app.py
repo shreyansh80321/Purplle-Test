@@ -12,6 +12,75 @@ st.set_page_config(
 st.title("Purplle Store Intelligence Dashboard")
 st.caption("CPU-first CCTV analytics system for entries, funnel, events, and anomalies.")
 
+
+st.sidebar.header("Video Processing")
+
+video_path = st.sidebar.text_input(
+    "Video path",
+    value="data/raw/CAM 1.mp4"
+)
+
+frame_skip = st.sidebar.slider(
+    "Frame skip",
+    min_value=1,
+    max_value=20,
+    value=5
+)
+
+st.sidebar.header("Video Processing")
+
+uploaded_video = st.sidebar.file_uploader(
+    "Upload raw CCTV footage",
+    type=["mp4", "avi", "mov", "mkv"]
+)
+
+frame_skip = st.sidebar.slider(
+    "Frame skip",
+    min_value=1,
+    max_value=20,
+    value=3
+)
+
+reset_before_processing = st.sidebar.checkbox(
+    "Reset old events before processing",
+    value=True
+)
+
+if st.sidebar.button("Process Uploaded Video"):
+    if uploaded_video is None:
+        st.sidebar.error("Please upload a video first.")
+    else:
+        with st.spinner("Processing uploaded video on CPU..."):
+            if reset_before_processing:
+                requests.delete(f"{API_BASE_URL}/events/reset", timeout=30)
+
+            files = {
+                "file": (
+                    uploaded_video.name,
+                    uploaded_video.getvalue(),
+                    uploaded_video.type,
+                )
+            }
+
+            data = {
+                "store_id": "brigade_bangalore",
+                "frame_skip": str(frame_skip),
+            }
+
+            response = requests.post(
+                f"{API_BASE_URL}/video/upload-process",
+                files=files,
+                data=data,
+                timeout=900,
+            )
+
+            if response.status_code == 200:
+                st.sidebar.success("Video uploaded and processed successfully.")
+                st.sidebar.json(response.json())
+                st.rerun()
+            else:
+                st.sidebar.error(response.text)
+
 try:
     metrics_response = requests.get(f"{API_BASE_URL}/metrics", timeout=5)
     funnel_response = requests.get(f"{API_BASE_URL}/funnel", timeout=5)
