@@ -219,7 +219,14 @@ class VideoProcessor:
 
         is_duplicate_entry = self._is_duplicate_entry(cx, cy, frame_index)
 
-        if count_entry_exit and is_entry and not state["entered"] and entry_allowed and not is_duplicate_entry:
+        if (
+            self.camera_role == "entrance"
+            and count_entry_exit
+            and is_entry
+            and not state["entered"]
+            and entry_allowed
+            and not is_duplicate_entry
+        ):
             save_event(
                 store_id=self.store_id,
                 camera_id=self.camera_id,
@@ -257,7 +264,14 @@ class VideoProcessor:
 
         exit_enabled = rules.get("exit_enabled", False)
 
-        if count_entry_exit and exit_enabled and is_exit and state["entered"] and not state["exited"]:
+        if (
+            self.camera_role == "entrance"
+            and count_entry_exit
+            and exit_enabled
+            and is_exit
+            and state["entered"]
+            and not state["exited"]
+        ):
             save_event(
                 store_id=self.store_id,
                 camera_id=self.camera_id,
