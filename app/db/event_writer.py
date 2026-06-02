@@ -21,8 +21,10 @@ def save_event(
 
     db = SessionLocal()
 
+    event_id = str(uuid.uuid4())
+
     event = StoreEvent(
-        event_id=str(uuid.uuid4()),
+        event_id=event_id,
         store_id=store_id,
         camera_id=camera_id,
         timestamp=datetime.utcnow(),
@@ -40,4 +42,4 @@ def save_event(
     db.commit()
     db.close()
 
-    return event.event_id
+    return event_id

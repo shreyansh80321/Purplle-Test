@@ -2,8 +2,6 @@
 __pycache__/
 *.pyc
 .env
-
-data/raw/
 data/videos/
 *.mp4
 *.avi
@@ -14,3 +12,6 @@ data/videos/
 *.sqlite
 runs/
 models/
+
+data/raw/
+data/raw/uploads/
