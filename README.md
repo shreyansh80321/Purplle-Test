@@ -70,6 +70,9 @@ streamlit run dashboard\streamlit_app.py
 
 ## Terminal Video Processing
 
+1. Add the video file to `data/raw`.
+2. Run:
+
 ```powershell
 python -m scripts.process_video --video "data/raw/CAM 1 - zone.mp4" --frame-skip 3
 ```
