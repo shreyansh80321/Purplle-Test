@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 data/videos/
+outputs/*.mp4
 *.mp4
 *.avi
 *.mov
@@ -15,3 +16,4 @@ models/
 
 data/raw/
 data/raw/uploads/
+!outputs/event_log.jsonl

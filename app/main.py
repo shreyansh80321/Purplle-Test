@@ -8,8 +8,11 @@ from app.analytics.metrics import get_store_metrics
 from app.analytics.funnel import get_store_funnel
 from app.analytics.anomalies import get_store_anomalies
 from app.api.video import router as video_router
+from app.core.store_layout import build_semantic_layout
+from app.db.database import ensure_table_columns
 
 Base.metadata.create_all(bind=engine)
+ensure_table_columns(StoreEvent)
 
 app = FastAPI(
     title="Purplle Store Intelligence System",
@@ -58,8 +61,24 @@ def events(db: Session = Depends(get_db)):
                 "timestamp": e.timestamp.isoformat(),
                 "event_type": e.event_type,
                 "track_id": e.track_id,
+                "id_token": e.id_token,
+                "store_code": e.store_code,
                 "zone": e.zone,
+                "zone_id": e.zone_id,
+                "zone_name": e.zone_name,
+                "zone_type": e.zone_type,
+                "is_revenue_zone": e.is_revenue_zone,
                 "direction": e.direction,
+                "is_staff": e.is_staff,
+                "gender": e.gender,
+                "age": e.age,
+                "age_bucket": e.age_bucket,
+                "group_id": e.group_id,
+                "group_size": e.group_size,
+                "queue_event_id": e.queue_event_id,
+                "wait_seconds": e.wait_seconds,
+                "abandoned": e.abandoned,
+                "queue_position_at_join": e.queue_position_at_join,
                 "x": e.x,
                 "y": e.y,
                 "confidence": e.confidence,
@@ -73,6 +92,16 @@ def events(db: Session = Depends(get_db)):
 @app.get("/anomalies")
 def anomalies(db: Session = Depends(get_db)):
     return get_store_anomalies(db)
+
+
+@app.get("/layout")
+def layout(camera_role: str = "inside_store"):
+    return build_semantic_layout(camera_role)
+
+
+@app.get("/zones")
+def zones(camera_role: str = "inside_store"):
+    return build_semantic_layout(camera_role)
 
 
 @app.delete("/events/reset")
