@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 from scripts.export_events_jsonl import export_events_jsonl
 from scripts.validate_events_jsonl import validate_events_jsonl
@@ -84,3 +85,27 @@ def test_validate_events_jsonl_accepts_valid_entry(tmp_path):
     exit_code = validate_events_jsonl(str(valid_path))
 
     assert exit_code == 0
+
+
+def test_video_processing_refreshes_event_log(monkeypatch, tmp_path):
+    from app.api import video as video_api
+
+    class DummyProcessor:
+        def process(self):
+            return {"processed": True}
+
+    output_path = tmp_path / "event_log.jsonl"
+
+    def fake_export(path: str):
+        Path(path).write_text('{"event_type":"entry"}\n', encoding="utf-8")
+        return 1, Path(path)
+
+    monkeypatch.setattr(video_api, "EVENT_LOG_PATH", output_path)
+    monkeypatch.setattr(video_api, "export_events_jsonl", fake_export)
+
+    result, exported_count, exported_path = video_api._process_and_export(DummyProcessor())
+
+    assert result == {"processed": True}
+    assert exported_count == 1
+    assert exported_path == output_path
+    assert output_path.read_text(encoding="utf-8") == '{"event_type":"entry"}\n'

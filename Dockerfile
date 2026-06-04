@@ -19,7 +19,7 @@ COPY README.md ./README.md
 COPY DESIGN.md ./DESIGN.md
 COPY CHOICES.md ./CHOICES.md
 
-RUN mkdir -p data/raw/uploads data/processed
+RUN mkdir -p data/raw/uploads data/processed outputs
 
 EXPOSE 8000
 

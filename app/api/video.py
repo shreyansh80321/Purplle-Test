@@ -5,17 +5,26 @@ import shutil
 import uuid
 
 from app.vision.processor import VideoProcessor
+from scripts.export_events_jsonl import export_events_jsonl
 
 router = APIRouter(prefix="/video", tags=["video-processing"])
 
 UPLOAD_DIR = Path("data/raw/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+EVENT_LOG_PATH = Path("outputs/event_log.jsonl")
+EVENT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 class VideoProcessRequest(BaseModel):
     video_path: str
     store_id: str = "brigade_bangalore"
     frame_skip: int = 3
+
+
+def _process_and_export(processor: VideoProcessor):
+    result = processor.process()
+    exported_count, exported_path = export_events_jsonl(str(EVENT_LOG_PATH))
+    return result, exported_count, exported_path
 
 
 @router.post("/process")
@@ -35,12 +44,16 @@ def process_video(request: VideoProcessRequest):
         frame_skip=request.frame_skip,
     )
 
-    result = processor.process()
+    result, exported_count, exported_path = _process_and_export(processor)
 
     return {
         "status": "success",
         "message": "Video processed using auto-calibration.",
-        "result": result
+        "result": result,
+        "event_log": {
+            "path": str(exported_path),
+            "event_count": exported_count,
+        },
     }
 
 
@@ -74,12 +87,16 @@ def upload_and_process_video(
         frame_skip=frame_skip,
     )
 
-    result = processor.process()
+    result, exported_count, exported_path = _process_and_export(processor)
 
     return {
         "status": "success",
         "message": "Uploaded video processed using auto-calibration.",
         "original_filename": original_name,
         "saved_path": str(saved_path),
-        "result": result
+        "result": result,
+        "event_log": {
+            "path": str(exported_path),
+            "event_count": exported_count,
+        },
     }
