@@ -1,10 +1,11 @@
 import cv2
+from datetime import datetime, timedelta
 from loguru import logger
 
-from app.vision.tracker import CentroidTracker
+from app.core.store_layout import build_semantic_layout, get_zone_by_point
 from app.db.event_writer import save_event
-from app.core.camera_config import load_camera_config
 from app.vision.auto_calibration import AutoCameraCalibrator
+from app.vision.tracker import CentroidTracker
 
 
 class VideoProcessor:
@@ -22,14 +23,14 @@ class VideoProcessor:
 
         logger.info("Running auto camera calibration.")
         self.camera_config = AutoCameraCalibrator(
-                video_path=video_path,
-                sample_frames=300,
-                frame_skip=10,
-            ).infer()
+            video_path=video_path,
+            sample_frames=300,
+            frame_skip=10,
+        ).infer()
         self.camera_role = self.camera_config.get("camera_role", "unknown")
+        self.layout = build_semantic_layout(self.camera_role)
 
         self.tracker = CentroidTracker(max_distance=90, max_missing=25)
-
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
             history=300,
             varThreshold=50,
@@ -45,6 +46,7 @@ class VideoProcessor:
         self.fps = 30
         self.passby_points = []
         self.max_passby_distance = 180
+        self.processing_started_at = datetime.utcnow()
 
     def _normalize_point(self, cx, cy, width, height):
         return cx / width, cy / height
@@ -64,16 +66,50 @@ class VideoProcessor:
 
     def _get_zone(self, cx, cy, width, height):
         nx, ny = self._normalize_point(cx, cy, width, height)
+        return get_zone_by_point(self.camera_role, nx, ny)
 
-        zones = self.camera_config.get("zones", {})
+    def _event_timestamp(self, frame_index):
+        offset_seconds = frame_index / max(float(self.fps or 30), 1.0)
+        return self.processing_started_at + timedelta(seconds=offset_seconds)
 
-        for zone_name, box in zones.items():
-            x1, y1, x2, y2 = box
+    def _zone_by_id(self, zone_id):
+        return next(
+            (zone for zone in self.layout["zones"] if zone["zone_id"] == zone_id),
+            {
+                "zone_id": "unknown",
+                "zone_name": "Unknown",
+                "zone_type": "unknown",
+                "is_revenue_zone": False,
+                "description": "Unmapped zone.",
+                "rect": None,
+            },
+        )
 
-            if x1 <= nx <= x2 and y1 <= ny <= y2:
-                return zone_name
+    def _save_zone_event(self, event_type, track_id, zone, cx, cy, frame_index, track_age, **extra):
+        meta = {
+            "source": "opencv_motion",
+            "camera_role": self.camera_role,
+            "frame_index": frame_index,
+            "track_age": track_age,
+        }
+        meta.update(extra.pop("meta", {}))
 
-        return "unknown"
+        save_event(
+            store_id=self.store_id,
+            camera_id=self.camera_id,
+            event_type=event_type,
+            track_id=f"T{track_id}",
+            zone=zone["zone_id"],
+            zone_id=zone["zone_id"],
+            zone_name=zone["zone_name"],
+            zone_type=zone["zone_type"],
+            is_revenue_zone=zone["is_revenue_zone"],
+            timestamp=self._event_timestamp(frame_index),
+            x=float(cx),
+            y=float(cy),
+            meta=meta,
+            **extra,
+        )
 
     def _detect_moving_people(self, frame):
         mask = self.bg_subtractor.apply(frame)
@@ -112,24 +148,25 @@ class VideoProcessor:
         return detections
 
     def _crossed_entry_line(self, old_point, new_point):
-      line = self.camera_config.get("entry_line")
+        line = self.camera_config.get("entry_line")
 
-      if line is None:
-          return False, False, "none", "none"
+        if line is None:
+            return False, False, "none", "none"
 
-      p1 = tuple(line["p1"])
-      p2 = tuple(line["p2"])
+        p1 = tuple(line["p1"])
+        p2 = tuple(line["p2"])
 
-      old_side = self._line_side(old_point, p1, p2)
-      new_side = self._line_side(new_point, p1, p2)
+        old_side = self._line_side(old_point, p1, p2)
+        new_side = self._line_side(new_point, p1, p2)
 
-      outside_side = line["outside_side"]
-      inside_side = line["inside_side"]
+        outside_side = line["outside_side"]
+        inside_side = line["inside_side"]
 
-      is_entry = old_side == outside_side and new_side == inside_side
-      is_exit = old_side == inside_side and new_side == outside_side
+        is_entry = old_side == outside_side and new_side == inside_side
+        is_exit = old_side == inside_side and new_side == outside_side
 
-      return is_entry, is_exit, old_side, new_side
+        return is_entry, is_exit, old_side, new_side
+
     def _is_duplicate_entry(self, cx, cy, frame_index):
         for entry in self.entry_points:
             old_x = entry["x"]
@@ -143,30 +180,28 @@ class VideoProcessor:
                 return True
 
         return False
+
     def _is_duplicate_passby(self, cx, cy, frame_index):
-      for event in self.passby_points:
-          old_x = event["x"]
-          old_y = event["y"]
-          old_frame = event["frame_index"]
+        for event in self.passby_points:
+            old_x = event["x"]
+            old_y = event["y"]
+            old_frame = event["frame_index"]
 
-          distance = ((cx - old_x) ** 2 + (cy - old_y) ** 2) ** 0.5
-          frame_gap = abs(frame_index - old_frame)
+            distance = ((cx - old_x) ** 2 + (cy - old_y) ** 2) ** 0.5
+            frame_gap = abs(frame_index - old_frame)
 
-          # Same nearby motion within a short time window is likely
-          # the same passerby being re-tracked as a new track.
-          if distance <= self.max_passby_distance and frame_gap <= int(20 * self.fps):
-              return True
+            if distance <= self.max_passby_distance and frame_gap <= int(20 * self.fps):
+                return True
 
-      return False
-      
+        return False
+
     def _cooldown_allowed(self, last_frame, current_frame, cooldown_seconds):
         if last_frame is None:
             return True
 
         cooldown_frames = int(cooldown_seconds * self.fps)
-
         return current_frame - last_frame >= cooldown_frames
-    
+
     def _handle_track_event(self, track_id, track_data, width, height, frame_index):
         centroid = track_data["centroid"]
         previous_centroid = track_data["previous_centroid"]
@@ -177,10 +212,7 @@ class VideoProcessor:
         count_entry_exit = rules.get("count_entry_exit", False)
         generate_passby = rules.get("generate_passby", False)
 
-        if previous_centroid is None:
-            return
-
-        if track_age < min_track_age:
+        if previous_centroid is None or track_age < min_track_age:
             return
 
         cx, cy = centroid
@@ -188,7 +220,6 @@ class VideoProcessor:
 
         old_point = self._normalize_point(old_cx, old_cy, width, height)
         new_point = self._normalize_point(cx, cy, width, height)
-
         zone = self._get_zone(cx, cy, width, height)
 
         state = self.track_states.get(
@@ -196,27 +227,22 @@ class VideoProcessor:
             {
                 "entered": False,
                 "exited": False,
-                "visited_product": False,
+                "visited_revenue": False,
                 "visited_billing": False,
                 "passby": False,
                 "last_zone": None,
+                "queue_started": False,
+                "queue_completed": False,
             },
         )
 
-        is_entry, is_exit, old_side, new_side = self._crossed_entry_line(
-            old_point,
-            new_point,
-        )
-
+        is_entry, is_exit, old_side, new_side = self._crossed_entry_line(old_point, new_point)
         entry_cooldown_seconds = rules.get("entry_cooldown_seconds", 90)
         entry_cooldown_frames = int(entry_cooldown_seconds * self.fps)
-
-        entry_allowed = True
-
-        if self.last_entry_frame is not None:
-            if frame_index - self.last_entry_frame < entry_cooldown_frames:
-                entry_allowed = False
-
+        entry_allowed = (
+            self.last_entry_frame is None
+            or frame_index - self.last_entry_frame >= entry_cooldown_frames
+        )
         is_duplicate_entry = self._is_duplicate_entry(cx, cy, frame_index)
 
         if (
@@ -226,23 +252,23 @@ class VideoProcessor:
             and not state["entered"]
             and entry_allowed
             and not is_duplicate_entry
+            and zone["zone_type"] != "staff_area"
         ):
-            save_event(
-                store_id=self.store_id,
-                camera_id=self.camera_id,
+            entry_zone = self._zone_by_id("entrance")
+            self._save_zone_event(
                 event_type="entry",
-                track_id=f"T{track_id}",
-                zone="entrance",
+                track_id=track_id,
+                zone=entry_zone,
+                cx=cx,
+                cy=cy,
+                frame_index=frame_index,
+                track_age=track_age,
                 direction="in",
-                x=float(cx),
-                y=float(cy),
+                id_token=f"{self.store_id}:{self.camera_id}:T{track_id}",
+                store_code=self.store_id,
                 meta={
-                    "source": "opencv_motion",
-                    "camera_role": self.camera_role,
                     "old_side": old_side,
                     "new_side": new_side,
-                    "frame_index": frame_index,
-                    "track_age": track_age,
                     "duplicate_suppression": "spatial_temporal_entry_filter",
                 },
             )
@@ -250,7 +276,6 @@ class VideoProcessor:
             state["entered"] = True
             state["exited"] = False
             self.last_entry_frame = frame_index
-
             self.entry_points.append(
                 {
                     "x": float(cx),
@@ -259,11 +284,9 @@ class VideoProcessor:
                     "track_id": f"T{track_id}",
                 }
             )
-
             logger.info(f"Entry event generated for T{track_id}")
 
         exit_enabled = rules.get("exit_enabled", False)
-
         if (
             self.camera_role == "entrance"
             and count_entry_exit
@@ -272,120 +295,153 @@ class VideoProcessor:
             and state["entered"]
             and not state["exited"]
         ):
-            save_event(
-                store_id=self.store_id,
-                camera_id=self.camera_id,
+            exit_zone = self._zone_by_id("entrance")
+            self._save_zone_event(
                 event_type="exit",
-                track_id=f"T{track_id}",
-                zone="exit",
+                track_id=track_id,
+                zone=exit_zone,
+                cx=cx,
+                cy=cy,
+                frame_index=frame_index,
+                track_age=track_age,
                 direction="out",
-                x=float(cx),
-                y=float(cy),
+                id_token=f"{self.store_id}:{self.camera_id}:T{track_id}",
+                store_code=self.store_id,
                 meta={
-                    "source": "opencv_motion",
-                    "camera_role": self.camera_role,
                     "old_side": old_side,
                     "new_side": new_side,
-                    "frame_index": frame_index,
-                    "track_age": track_age,
                 },
             )
 
             state["exited"] = True
             self.last_exit_frame = frame_index
-
             logger.info(f"Exit event generated for T{track_id}")
-        is_duplicate_passby = self._is_duplicate_passby(cx, cy, frame_index)
 
-        passby_allowed = self._cooldown_allowed(
-              self.last_passby_frame,
-              frame_index,
-              8,
-          )
+        is_duplicate_passby = self._is_duplicate_passby(cx, cy, frame_index)
+        passby_allowed = self._cooldown_allowed(self.last_passby_frame, frame_index, 8)
 
         if (
-                generate_passby
-                and zone in {"outside_walkway", "store_front"}
-                and not state["passby"]
-                and not is_duplicate_passby
-                and passby_allowed
-            ):
-                save_event(
-                    store_id=self.store_id,
-                    camera_id=self.camera_id,
-                    event_type="outside_passby",
-                    track_id=f"T{track_id}",
-                    zone=zone,
-                    x=float(cx),
-                    y=float(cy),
-                    meta={
-                        "source": "opencv_motion",
-                        "camera_role": self.camera_role,
-                        "frame_index": frame_index,
-                        "track_age": track_age,
-                        "duplicate_suppression": "spatial_temporal_passby_filter",
-                    },
+            generate_passby
+            and zone["zone_type"] == "outside_passby"
+            and not state["passby"]
+            and not is_duplicate_passby
+            and passby_allowed
+        ):
+            self._save_zone_event(
+                event_type="outside_passby",
+                track_id=track_id,
+                zone=zone,
+                cx=cx,
+                cy=cy,
+                frame_index=frame_index,
+                track_age=track_age,
+                store_code=self.store_id,
+                meta={"duplicate_suppression": "spatial_temporal_passby_filter"},
+            )
+
+            state["passby"] = True
+            self.last_passby_frame = frame_index
+            self.passby_points.append(
+                {
+                    "x": float(cx),
+                    "y": float(cy),
+                    "frame_index": frame_index,
+                    "track_id": f"T{track_id}",
+                }
+            )
+            logger.info(f"Outside passby event generated for T{track_id}")
+
+        last_zone_id = state.get("last_zone")
+        if zone["zone_id"] != "unknown" and zone["zone_id"] != last_zone_id:
+            if last_zone_id and last_zone_id != "unknown":
+                previous_zone = self._zone_by_id(last_zone_id)
+                self._save_zone_event(
+                    event_type="zone_exited",
+                    track_id=track_id,
+                    zone=previous_zone,
+                    cx=cx,
+                    cy=cy,
+                    frame_index=frame_index,
+                    track_age=track_age,
+                    store_code=self.store_id,
                 )
 
-                state["passby"] = True
-                self.last_passby_frame = frame_index
+            self._save_zone_event(
+                event_type="zone_entered",
+                track_id=track_id,
+                zone=zone,
+                cx=cx,
+                cy=cy,
+                frame_index=frame_index,
+                track_age=track_age,
+                store_code=self.store_id,
+            )
 
-                self.passby_points.append(
-                    {
-                        "x": float(cx),
-                        "y": float(cy),
-                        "frame_index": frame_index,
-                        "track_id": f"T{track_id}",
-                    }
-                )
-
-                logger.info(f"Outside passby event generated for T{track_id}")
-
-        if self.camera_role == "inside_store":
-            if zone == "product_zone" and not state["visited_product"]:
-                save_event(
-                    store_id=self.store_id,
-                    camera_id=self.camera_id,
+            if zone["is_revenue_zone"] and zone["zone_type"] != "billing_queue" and not state["visited_revenue"]:
+                self._save_zone_event(
                     event_type="zone_visit",
-                    track_id=f"T{track_id}",
-                    zone="product_zone",
-                    x=float(cx),
-                    y=float(cy),
-                    meta={
-                        "source": "opencv_motion",
-                        "camera_role": self.camera_role,
-                        "frame_index": frame_index,
-                        "track_age": track_age,
-                    },
+                    track_id=track_id,
+                    zone=zone,
+                    cx=cx,
+                    cy=cy,
+                    frame_index=frame_index,
+                    track_age=track_age,
+                    store_code=self.store_id,
+                    meta={"compatibility_export": "zone_entered"},
                 )
+                state["visited_revenue"] = True
+                logger.info(f"Revenue zone event generated for T{track_id}")
 
-                state["visited_product"] = True
+            if zone["zone_type"] == "billing_queue":
+                if not state["visited_billing"]:
+                    self._save_zone_event(
+                        event_type="billing_visit",
+                        track_id=track_id,
+                        zone=zone,
+                        cx=cx,
+                        cy=cy,
+                        frame_index=frame_index,
+                        track_age=track_age,
+                        store_code=self.store_id,
+                        meta={"compatibility_source": "cash_counter"},
+                    )
+                    state["visited_billing"] = True
+                    logger.info(f"Billing event generated for T{track_id}")
 
-                logger.info(f"Product zone event generated for T{track_id}")
+                if not state["queue_started"]:
+                    state["queue_event_id"] = f"Q-{self.store_id}-{self.camera_id}-T{track_id}"
+                    state["queue_started"] = True
+                    state["queue_join_frame"] = frame_index
 
-            if zone == "billing" and not state["visited_billing"]:
-                save_event(
-                    store_id=self.store_id,
-                    camera_id=self.camera_id,
-                    event_type="billing_visit",
-                    track_id=f"T{track_id}",
-                    zone="billing",
-                    x=float(cx),
-                    y=float(cy),
-                    meta={
-                        "source": "opencv_motion",
-                        "camera_role": self.camera_role,
-                        "frame_index": frame_index,
-                        "track_age": track_age,
-                    },
-                )
+        if (
+            zone["zone_type"] == "billing_queue"
+            and state.get("queue_started")
+            and not state.get("queue_completed")
+            and frame_index - state.get("queue_join_frame", frame_index) >= int(5 * self.fps)
+        ):
+            wait_seconds = round(
+                (frame_index - state["queue_join_frame"]) / max(float(self.fps or 30), 1.0),
+                2,
+            )
+            self._save_zone_event(
+                event_type="queue_completed",
+                track_id=track_id,
+                zone=zone,
+                cx=cx,
+                cy=cy,
+                frame_index=frame_index,
+                track_age=track_age,
+                store_code=self.store_id,
+                queue_event_id=state["queue_event_id"],
+                wait_seconds=wait_seconds,
+                abandoned=False,
+                queue_position_at_join=1,
+            )
+            state["queue_completed"] = True
 
-                state["visited_billing"] = True
-
-                logger.info(f"Billing event generated for T{track_id}")
-
-        state["last_zone"] = zone
+        state["last_zone"] = zone["zone_id"]
         self.track_states[track_id] = state
+
     def process(self):
         cap = cv2.VideoCapture(self.video_path)
 
@@ -397,6 +453,7 @@ class VideoProcessor:
 
         logger.info(f"Processing video: {self.video_path}")
         logger.info(f"Camera ID: {self.camera_id}")
+        logger.info(f"Camera role: {self.camera_role}")
         logger.info(f"Total frames: {total_frames}")
         logger.info(f"FPS: {self.fps}")
 
@@ -415,7 +472,6 @@ class VideoProcessor:
                 continue
 
             height, width = frame.shape[:2]
-
             detections = self._detect_moving_people(frame)
             tracks = self.tracker.update(detections)
 
@@ -438,6 +494,7 @@ class VideoProcessor:
         return {
             "video_path": self.video_path,
             "camera_id": self.camera_id,
+            "camera_role": self.camera_role,
             "processed_frames": processed_frames,
             "status": "completed",
             "calibration_used": self.camera_config.get("description"),

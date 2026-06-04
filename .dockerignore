@@ -6,6 +6,7 @@ __pycache__/
 
 data/raw/
 data/processed/
+outputs/*.mp4
 data/**/*.mp4
 data/**/*.avi
 data/**/*.mov
@@ -19,3 +20,4 @@ data/**/*.mkv
 
 runs/
 models/
+!outputs/event_log.jsonl
